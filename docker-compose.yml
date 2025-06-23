@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  # Database Migration Service
+  migration:
+    build:
+      context: .
+      dockerfile: LambdaTask/Migration.Dockerfile
+    container_name: ${APP_NAME:-dotnet-app}-migration
+    environment:
+      - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Development}
+      - ConnectionStrings__PostgresConnection=Host=${DB_HOST:-db};Port=5432;Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD};
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+
+
+  # .NET 8.0 Application
+  webapp:
+    build:
+      context: .
+      dockerfile: LambdaTask/Dockerfile
+    container_name: ${APP_NAME:-dotnet-app}
+    ports:
+      - "${APP_PORT:-5000}:80"
+      - "${APP_HTTPS_PORT:-5001}:443"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Development}
+      - ASPNETCORE_URLS=http://+:80;https://+:443
+      - ConnectionStrings__PostgresConnection=Host=${DB_HOST:-db};Port=5432;Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD};
+      - ASPNETCORE_Kestrel__Certificates__Default__Password=development_password_123
+      - ASPNETCORE_Kestrel__Certificates__Default__Path=/app/aspnetapp.pfx
+    depends_on:
+      db:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # PostgreSQL Database
+  db:
+    image: postgres:${POSTGRES_VERSION:-15-alpine}
+    container_name: ${DB_CONTAINER_NAME:-postgres-db}
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # pgAdmin (Optional - for database management)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: ${PGADMIN_CONTAINER_NAME:-pgadmin}
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "${PGADMIN_PORT:-8080}:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - db
+    networks:
+      - app-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge
